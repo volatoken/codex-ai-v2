@@ -1,0 +1,25 @@
+version: "3.8"
+
+services:
+  cliproxyapi:
+    image: eceasy/cli-proxy-api:latest
+    ports:
+      - "8317:8317"
+    volumes:
+      - ./cliproxyapi/config.yaml:/CLIProxyAPI/config.yaml
+      - cliproxy-auth:/root/.cli-proxy-api
+    restart: unless-stopped
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - cliproxyapi
+    restart: unless-stopped
+
+volumes:
+  cliproxy-auth:

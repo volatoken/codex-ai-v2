@@ -1,0 +1,41 @@
+# ============================================
+# CLIProxyAPI — Config cho OpenFang + Paperclip
+# ============================================
+
+host: "127.0.0.1"
+port: 8317
+
+# 2 API key: 1 cho OpenFang agents, 1 cho Paperclip agents
+api-keys:
+  - "openfang-key-2026"
+  - "paperclip-key-2026"
+
+auth-dir: "~/.cli-proxy-api"
+
+request-retry: 3
+max-retry-interval: 30
+
+quota-exceeded:
+  switch-project: true
+  switch-preview-model: true
+
+routing:
+  strategy: "round-robin"
+
+streaming:
+  keepalive-seconds: 15
+  bootstrap-retries: 1
+
+usage-statistics-enabled: true
+
+# Model aliases cho Codex OAuth (ChatGPT account)
+oauth-model-alias:
+  codex:
+    - name: "gpt-4o"
+      alias: "gpt-4o"
+    - name: "gpt-4o-mini"
+      alias: "gpt-4o-mini"
+    - name: "o3"
+      alias: "o3"
+    - name: "o3-mini"
+      alias: "o3-mini"

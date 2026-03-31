@@ -1,6 +1,17 @@
 version: "3.8"
 
 services:
+  openfang:
+    image: openfang/openfang:latest
+    ports:
+      - "4200:4200"
+    volumes:
+      - ./openfang:/etc/openfang
+      - openfang-data:/var/lib/openfang
+    environment:
+      - OPENFANG_API_KEY=${OPENFANG_API_KEY:-}
+    restart: unless-stopped
+
   cliproxyapi:
     image: eceasy/cli-proxy-api:latest
     ports:
@@ -8,6 +19,14 @@ services:
     volumes:
       - ./cliproxyapi/config.yaml:/CLIProxyAPI/config.yaml
       - cliproxy-auth:/root/.cli-proxy-api
+    restart: unless-stopped
+
+  paperclip:
+    image: node:20-slim
+    working_dir: /app
+    command: npx paperclipai start
+    ports:
+      - "3100:3100"
     restart: unless-stopped
 
   orchestrator:
@@ -18,8 +37,11 @@ services:
     volumes:
       - ./data:/app/data
     depends_on:
+      - openfang
       - cliproxyapi
+      - paperclip
     restart: unless-stopped
 
 volumes:
   cliproxy-auth:
+  openfang-data:

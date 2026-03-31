@@ -12,13 +12,15 @@ from telegram.ext import (
 )
 
 from . import commands, config, kv
-from .agents import DEFAULT_AGENTS, make_agent_config
+from .agents import DEFAULT_AGENTS, build_manifest, SYSTEM_PROMPTS
 from .debate import Debate, DebateManager, DebateState
+from .openfang import OpenFangClient
 from .paperclip import PaperclipClient
 from .topic_manager import TopicManager
 
 logger = logging.getLogger(__name__)
 paperclip = PaperclipClient()
+openfang = OpenFangClient()
 
 
 class TelegramBot:
@@ -65,7 +67,14 @@ class TelegramBot:
 
     async def _post_init(self, app: Application) -> None:
         self.topic_mgr = TopicManager(app.bot)
-        self.debate_mgr = DebateManager(self._send)
+        self.debate_mgr = DebateManager(self._send, openfang)
+
+        # Configure CLIProxyAPI as OpenFang's OpenAI provider
+        if config.CLIPROXY_API_KEY:
+            try:
+                await openfang.set_provider_key("openai", config.CLIPROXY_API_KEY)
+            except Exception:
+                logger.warning("Could not set OpenFang provider key")
 
     async def _send(self, topic_id: int, text: str) -> None:
         for chunk in _chunk(text, 4000):
@@ -121,21 +130,32 @@ class TelegramBot:
                 },
             )
 
-            # 2. Create default agents
+            # 2. Spawn agents in OpenFang + register in Paperclip
             for a_slug, a_def in DEFAULT_AGENTS.items():
-                agent = await paperclip.create_agent(
+                # OpenFang — execution
+                manifest = build_manifest(
+                    a_def["name"], a_def["description"], a_def["model"]
+                )
+                of_agent = await openfang.spawn_agent(manifest)
+                of_id = of_agent["id"]
+                await openfang.update_agent(
+                    of_id, system_prompt=a_def["system_prompt"]
+                )
+
+                # Paperclip — budget tracking
+                pc_agent = await paperclip.create_agent(
                     cid,
                     {
-                        "name": a_def["name"],
-                        "role": a_def["role"],
+                        "name": a_def["display_name"],
+                        "role": a_slug,
                         "adapterType": "http",
-                        "adapterConfig": make_agent_config(
-                            a_def["role"], a_def["model"]
-                        ),
                         "budgetMonthlyCents": a_def["budget_monthly_cents"],
                     },
                 )
-                kv.set(f"project:{slug}:agents:{a_slug}", agent["id"])
+
+                # Save mappings
+                kv.set(f"project:{slug}:of_agents:{a_slug}", of_id)
+                kv.set(f"project:{slug}:pc_agents:{a_slug}", pc_agent["id"])
                 kv.set(f"project:{slug}:model:{a_slug}", a_def["model"])
 
             # 3. Persist project metadata

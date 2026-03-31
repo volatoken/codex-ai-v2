@@ -1,4 +1,4 @@
-"""Agent definitions, system prompts, and Paperclip adapter config builder."""
+"""Agent definitions, system prompts, and OpenFang TOML manifest builder."""
 
 from . import config
 
@@ -59,42 +59,72 @@ QA_SYSTEM_PROMPT = (
     "4. Kết quả: TEST_RESULT: PASS hoặc TEST_RESULT: FAIL kèm lý do"
 )
 
+SYSTEM_PROMPTS = {
+    "cto": CTO_SYSTEM_PROMPT,
+    "critic": CRITIC_SYSTEM_PROMPT,
+    "engineer": ENGINEER_SYSTEM_PROMPT,
+    "qa": QA_SYSTEM_PROMPT,
+}
 
-def make_agent_config(role: str, model: str) -> dict:
-    """Build a Paperclip HTTP adapter_config pointing at CLIProxyAPI."""
-    return {
-        "url": f"{config.CLIPROXY_URL}/v1/chat/completions",
-        "method": "POST",
-        "headers": {
-            "Authorization": f"Bearer {config.CLIPROXY_PAPERCLIP_KEY}",
-            "Content-Type": "application/json",
-        },
-        "payloadTemplate": {"model": model},
-        "timeoutSec": 300,
-        "enabled": True,
-        "intervalSec": 120,
-        "maxConcurrentRuns": 1,
-    }
+
+def build_manifest(
+    name: str,
+    description: str,
+    model: str,
+    provider: str = "openai",
+    tools: list[str] | None = None,
+) -> str:
+    """Build an OpenFang agent TOML manifest string."""
+    tool_list = tools or ["web_fetch", "web_search"]
+    tools_str = ", ".join(f'"{t}"' for t in tool_list)
+    desc_escaped = description.replace('"', '\\"')
+
+    return (
+        f'name = "{name}"\n'
+        f'version = "0.1.0"\n'
+        f'description = "{desc_escaped}"\n'
+        f'module = "builtin:chat"\n'
+        f"\n"
+        f"[model]\n"
+        f'provider = "{provider}"\n'
+        f'model = "{model}"\n'
+        f"\n"
+        f"[capabilities]\n"
+        f"tools = [{tools_str}]\n"
+        f'memory_read = ["*"]\n'
+        f'memory_write = ["self.*"]\n'
+    )
 
 
 DEFAULT_AGENTS = {
     "cto": {
-        "name": "CTO",
-        "role": "CTO — thiết kế kiến trúc, phản hồi Critic",
+        "name": "cto",
+        "display_name": "CTO",
+        "description": "CTO — thiết kế kiến trúc, phản hồi Critic",
         "model": config.DEFAULT_MODEL_CTO,
         "system_prompt": CTO_SYSTEM_PROMPT,
         "budget_monthly_cents": 500,
     },
+    "critic": {
+        "name": "critic",
+        "display_name": "Critic",
+        "description": "Architecture Critic — phản biện thiết kế",
+        "model": config.DEFAULT_MODEL_CRITIC,
+        "system_prompt": CRITIC_SYSTEM_PROMPT,
+        "budget_monthly_cents": 300,
+    },
     "engineer": {
-        "name": "Engineer",
-        "role": "Software Engineer — viết code, implement feature",
+        "name": "engineer",
+        "display_name": "Engineer",
+        "description": "Software Engineer — viết code, implement feature",
         "model": config.DEFAULT_MODEL_ENGINEER,
         "system_prompt": ENGINEER_SYSTEM_PROMPT,
         "budget_monthly_cents": 500,
     },
     "qa": {
-        "name": "QA",
-        "role": "QA Engineer — test, review, deploy",
+        "name": "qa",
+        "display_name": "QA",
+        "description": "QA Engineer — test, review, deploy",
         "model": config.DEFAULT_MODEL_QA,
         "system_prompt": QA_SYSTEM_PROMPT,
         "budget_monthly_cents": 300,

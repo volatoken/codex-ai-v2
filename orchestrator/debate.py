@@ -1,4 +1,4 @@
-"""CTO  Critic debate state machine.
+"""CTO ↔ Critic debate state machine.
 
 Rules
 ─────
@@ -7,6 +7,9 @@ Rules
 3. Supermajority (>=80 % resolved) → auto-agree.
 4. After 4 rounds with >2 open issues → escalate to user.
 5. 30 s cooldown between rounds.
+
+Execution: CTO and Critic are OpenFang agents.
+Orchestrator sends messages via OpenFang API → agents call LLM → return text.
 """
 
 import asyncio
@@ -16,8 +19,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Awaitable
 
-from . import config, kv, llm
-from .agents import CTO_SYSTEM_PROMPT, CRITIC_SYSTEM_PROMPT
+from . import config, kv
+from .openfang import OpenFangClient
 
 
 class DebateState(str, Enum):
@@ -127,10 +130,11 @@ SendFn = Callable[[int, str], Awaitable[None]]
 
 
 class DebateManager:
-    """Orchestrates the CTO ↔ Critic debate loop."""
+    """Orchestrates the CTO ↔ Critic debate loop via OpenFang agents."""
 
-    def __init__(self, send_message: SendFn) -> None:
+    def __init__(self, send_message: SendFn, openfang: OpenFangClient) -> None:
         self.send_message = send_message
+        self.of = openfang
 
     # ── public entry points ──────────────────────────────────
 
@@ -277,45 +281,27 @@ class DebateManager:
                 debate.save()
                 await asyncio.sleep(config.DEBATE_COOLDOWN_SEC)
 
-    # ── LLM calls ────────────────────────────────────────────
+    # ── LLM calls via OpenFang agents ────────────────────────
 
     async def _call_cto(self, context: str, debate: Debate) -> str:
-        model = kv.get(
-            f"project:{debate.slug}:model:cto", config.DEFAULT_MODEL_CTO
+        cto_id = kv.get(f"project:{debate.slug}:of_agents:cto")
+        if not cto_id:
+            raise RuntimeError(f"OpenFang CTO agent not found for {debate.slug}")
+        message = (
+            f"[Round {debate.round}, Design v"
+            f"{len(debate.design_history) + 1}]\n\n{context}"
         )
-        return await llm.chat(
-            model=model,
-            messages=[
-                {"role": "system", "content": CTO_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        f"[Round {debate.round}, Design v"
-                        f"{len(debate.design_history) + 1}]\n\n{context}"
-                    ),
-                },
-            ],
-            api_key=config.CLIPROXY_PAPERCLIP_KEY,
-        )
+        return await self.of.send_message(cto_id, message)
 
     async def _call_critic(self, design: str, debate: Debate) -> str:
-        model = kv.get(
-            f"project:{debate.slug}:model:critic", config.DEFAULT_MODEL_CRITIC
+        critic_id = kv.get(f"project:{debate.slug}:of_agents:critic")
+        if not critic_id:
+            raise RuntimeError(f"OpenFang Critic agent not found for {debate.slug}")
+        message = (
+            f"[Round {debate.round}]\n\n"
+            f"Thiết kế CTO:\n\n{design}"
         )
-        return await llm.chat(
-            model=model,
-            messages=[
-                {"role": "system", "content": CRITIC_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        f"[Round {debate.round}]\n\n"
-                        f"Thiết kế CTO:\n\n{design}"
-                    ),
-                },
-            ],
-            api_key=config.CLIPROXY_OPENFANG_KEY,
-        )
+        return await self.of.send_message(critic_id, message)
 
     # ── context builders ─────────────────────────────────────
 

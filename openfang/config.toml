@@ -1,0 +1,17 @@
+# OpenFang configuration — Codex AI v2
+# CLIProxyAPI is configured as the OpenAI-compatible provider
+
+[server]
+host = "0.0.0.0"
+port = 4200
+
+[providers.openai]
+# CLIProxyAPI proxies ChatGPT as an OpenAI-compatible API
+base_url = "http://127.0.0.1:8317"
+
+[security]
+api_key_env = "OPENFANG_API_KEY"
+
+[channels]
+# Telegram is handled by the Python orchestrator, not OpenFang
+telegram = false

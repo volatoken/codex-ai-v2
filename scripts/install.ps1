@@ -5,12 +5,12 @@ $ErrorActionPreference = 'Stop'
 
 Write-Host '============================================' -ForegroundColor Cyan
 Write-Host '  Codex AI v2 — Installer                  ' -ForegroundColor Cyan
-Write-Host '  Paperclip + CLIProxyAPI + Telegram Bot    ' -ForegroundColor Cyan
+Write-Host '  OpenFang + Paperclip + CLIProxyAPI + Bot  ' -ForegroundColor Cyan
 Write-Host '============================================' -ForegroundColor Cyan
 Write-Host ''
 
 # ── 1. Check Python ─────────────────────────────────────────
-Write-Host '[1/5] Kiểm tra Python...' -ForegroundColor Yellow
+Write-Host '[1/6] Kiểm tra Python...' -ForegroundColor Yellow
 try {
     $pyVer = python --version 2>&1
     Write-Host "  $pyVer" -ForegroundColor Green
@@ -20,7 +20,7 @@ try {
 }
 
 # ── 2. Check Node.js ────────────────────────────────────────
-Write-Host '[2/5] Kiểm tra Node.js...' -ForegroundColor Yellow
+Write-Host '[2/6] Kiểm tra Node.js...' -ForegroundColor Yellow
 try {
     $nodeVer = node --version 2>&1
     Write-Host "  Node.js $nodeVer" -ForegroundColor Green
@@ -30,15 +30,60 @@ try {
 }
 
 # ── 3. Install Python dependencies ──────────────────────────
-Write-Host '[3/5] Cài Python dependencies...' -ForegroundColor Yellow
+Write-Host '[3/6] Cài Python dependencies...' -ForegroundColor Yellow
 $projectDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Push-Location $projectDir
 pip install -r requirements.txt
 Pop-Location
 Write-Host '  Dependencies đã cài.' -ForegroundColor Green
 
-# ── 4. Setup CLIProxyAPI ────────────────────────────────────
-Write-Host '[4/5] Setup CLIProxyAPI...' -ForegroundColor Yellow
+# ── 4. Setup OpenFang ───────────────────────────────────────
+Write-Host '[4/6] Setup OpenFang...' -ForegroundColor Yellow
+$openfangDir = Join-Path $HOME 'openfang'
+$openfangExe = Join-Path $openfangDir 'openfang.exe'
+
+if (!(Test-Path $openfangExe)) {
+    Write-Host '  Tải OpenFang từ GitHub...' -ForegroundColor DarkYellow
+    New-Item -ItemType Directory -Force -Path $openfangDir | Out-Null
+
+    try {
+        $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/openfang-ai/openfang/releases/latest'
+        $asset = $release.assets | Where-Object {
+            $_.name -like '*windows*amd64*' -or $_.name -like '*Windows*x86_64*'
+        } | Select-Object -First 1
+
+        if ($asset) {
+            $zipFile = Join-Path $env:TEMP 'openfang.zip'
+            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipFile
+            Expand-Archive -Path $zipFile -DestinationPath $openfangDir -Force
+            Remove-Item $zipFile -Force -ErrorAction SilentlyContinue
+
+            $exe = Get-ChildItem -Path $openfangDir -Recurse -Filter '*.exe' | Select-Object -First 1
+            if ($exe -and ($exe.FullName -ne $openfangExe)) {
+                Move-Item -Path $exe.FullName -Destination $openfangExe -Force
+            }
+            Write-Host "  OpenFang: $openfangExe" -ForegroundColor Green
+        } else {
+            Write-Host '  Không tìm thấy asset Windows.' -ForegroundColor Red
+            Write-Host '  Tải thủ công: https://github.com/openfang-ai/openfang/releases' -ForegroundColor White
+        }
+    } catch {
+        Write-Host "  Lỗi tải OpenFang: $_" -ForegroundColor Red
+    }
+} else {
+    Write-Host "  OpenFang đã có: $openfangExe" -ForegroundColor Green
+}
+
+# Copy OpenFang config
+$openfangConfig = Join-Path $openfangDir 'config.toml'
+$sourceOFConfig = Join-Path $projectDir 'openfang' 'config.toml'
+if (!(Test-Path $openfangConfig) -and (Test-Path $sourceOFConfig)) {
+    Copy-Item $sourceOFConfig $openfangConfig
+    Write-Host '  Config đã copy vào openfang/' -ForegroundColor Green
+}
+
+# ── 5. Setup CLIProxyAPI ────────────────────────────────────
+Write-Host '[5/6] Setup CLIProxyAPI...' -ForegroundColor Yellow
 $cliproxyDir = Join-Path $HOME 'cliproxyapi'
 $cliproxyExe = Join-Path $cliproxyDir 'CLIProxyAPI.exe'
 
@@ -82,8 +127,8 @@ if (!(Test-Path $cliproxyConfig) -and (Test-Path $sourceConfig)) {
     Write-Host '  Config đã copy vào cliproxyapi/' -ForegroundColor Green
 }
 
-# ── 5. Setup .env ────────────────────────────────────────────
-Write-Host '[5/5] Setup .env...' -ForegroundColor Yellow
+# ── 6. Setup .env ────────────────────────────────────────────
+Write-Host '[6/6] Setup .env...' -ForegroundColor Yellow
 Push-Location $projectDir
 
 if (!(Test-Path .env)) {

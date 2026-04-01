@@ -12,10 +12,11 @@ from telegram.ext import (
 )
 
 from . import commands, config, kv
-from .agents import DEFAULT_AGENTS, build_manifest, SYSTEM_PROMPTS
+from .agents import DEFAULT_AGENTS, PAPERCLIP_AGENTS, OPENFANG_AGENTS
+from .agents import build_manifest, SYSTEM_PROMPTS
 from .debate import Debate, DebateManager, DebateState
 from .openfang import OpenFangClient
-from .paperclip import PaperclipClient
+from .paperclip import PaperclipClient, make_agent_config
 from .topic_manager import TopicManager
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ class TelegramBot:
 
     async def _post_init(self, app: Application) -> None:
         self.topic_mgr = TopicManager(app.bot)
-        self.debate_mgr = DebateManager(self._send, openfang)
+        self.debate_mgr = DebateManager(self._send, paperclip, openfang)
 
         # Configure CLIProxyAPI as OpenFang's OpenAI provider
         if config.CLIPROXY_API_KEY:
@@ -130,33 +131,38 @@ class TelegramBot:
                 },
             )
 
-            # 2. Spawn agents in OpenFang + register in Paperclip
+            # 2. Spawn agents — Paperclip backbone vs OpenFang reviewer
             for a_slug, a_def in DEFAULT_AGENTS.items():
-                # OpenFang — execution
-                manifest = build_manifest(
-                    a_def["name"], a_def["description"], a_def["model"]
-                )
-                of_agent = await openfang.spawn_agent(manifest)
-                of_id = of_agent["id"]
-                await openfang.update_agent(
-                    of_id, system_prompt=a_def["system_prompt"]
-                )
+                if a_def["system"] == "paperclip":
+                    # Paperclip = backbone (CTO, Engineer, QA)
+                    # HTTP adapter → CLIProxyAPI → ChatGPT
+                    pc_agent = await paperclip.create_agent(
+                        cid,
+                        {
+                            "name": a_def["display_name"],
+                            "role": a_slug,
+                            "adapterType": "http",
+                            "adapterConfig": make_agent_config(
+                                a_def["system_prompt"], a_def["model"]
+                            ),
+                            "budgetMonthlyCents": a_def["budget_monthly_cents"],
+                        },
+                    )
+                    kv.set(f"project:{slug}:pc_agents:{a_slug}", pc_agent["id"])
+                    kv.set(f"project:{slug}:model:{a_slug}", a_def["model"])
 
-                # Paperclip — budget tracking
-                pc_agent = await paperclip.create_agent(
-                    cid,
-                    {
-                        "name": a_def["display_name"],
-                        "role": a_slug,
-                        "adapterType": "http",
-                        "budgetMonthlyCents": a_def["budget_monthly_cents"],
-                    },
-                )
-
-                # Save mappings
-                kv.set(f"project:{slug}:of_agents:{a_slug}", of_id)
-                kv.set(f"project:{slug}:pc_agents:{a_slug}", pc_agent["id"])
-                kv.set(f"project:{slug}:model:{a_slug}", a_def["model"])
+                else:
+                    # OpenFang = reviewer (Critic)
+                    manifest = build_manifest(
+                        a_def["name"], a_def["description"], a_def["model"]
+                    )
+                    of_agent = await openfang.spawn_agent(manifest)
+                    of_id = of_agent["id"]
+                    await openfang.update_agent(
+                        of_id, system_prompt=a_def["system_prompt"]
+                    )
+                    kv.set(f"project:{slug}:of_agents:{a_slug}", of_id)
+                    kv.set(f"project:{slug}:model:{a_slug}", a_def["model"])
 
             # 3. Persist project metadata
             kv.set(f"project:{slug}:company_id", cid)

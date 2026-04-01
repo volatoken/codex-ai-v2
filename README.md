@@ -1,7 +1,7 @@
 # Codex AI v2
 
 Hệ thống AI multi-agent điều khiển từ Telegram.
-**Option B Architecture**: OpenFang = agent execution, Paperclip = project management.
+**Cross-system debate**: Paperclip CTO (backbone) ↔ OpenFang Critic (reviewer).
 
 ## Kiến trúc
 
@@ -9,41 +9,62 @@ Hệ thống AI multi-agent điều khiển từ Telegram.
 Telegram Supergroup
   │
   ├── 📌 Topic cha (control panel)
-  │     /agents /model /hire /status ...
   ├── 📐 Architecture (CTO ↔ Critic debate)
   ├── 💻 Code (Engineer implements)
   └── 🧪 Test & Deploy (QA reviews)
   │
   ▼
-┌──────────────┐     ┌─────────────────┐
-│ Orchestrator │────▶│ OpenFang        │
-│ (Python bot) │     │ :4200           │
-│              │     │ Agent execution │
-│  - Topics    │     │ 76 REST APIs    │
-│  - Debate    │     │ TOML manifests  │
-│  - Commands  │     └───────┬─────────┘
-│              │             │
-│              │     ┌───────▼─────────┐
-│              │     │ CLIProxyAPI     │
-│              │     │ :8317           │
-│              │     │ ChatGPT proxy   │
-│              │     └─────────────────┘
-│              │
-│              │────▶┌─────────────────┐
-│              │     │ Paperclip       │
-│              │     │ :3100           │
-│              │     │ Project mgmt    │
-└──────────────┘     └─────────────────┘
+┌──────────────────┐
+│   Orchestrator   │ (Python bot — referee)
+│   - Topics       │
+│   - Debate       │
+│   - Commands     │
+└──┬───────────┬───┘
+   │           │
+   ▼           ▼
+┌──────────┐  ┌──────────────┐
+│Paperclip │  │  OpenFang    │
+│:3100     │  │  :4200       │
+│ BACKBONE │  │  REVIEWER    │
+│          │  │              │
+│ CTO ─────┤  │  Critic ─────┤
+│ Engineer │  │  (phản biện  │
+│ QA       │  │   tối ưu)    │
+│          │  │              │
+│ adapter──┤  │  provider────┤
+└────┬─────┘  └──────┬───────┘
+     │               │
+     ▼               ▼
+┌────────────────────────────┐
+│       CLIProxyAPI :8317    │
+│    ChatGPT OAuth proxy     │
+│    /v1/chat/completions    │
+└────────────────────────────┘
 ```
 
-## Thành phần
+## Phân hệ
 
-| Service | Port | Vai trò |
-|---------|------|---------|
-| OpenFang | 4200 | Agent execution engine — spawn, LLM calls, models, memory, security |
-| CLIProxyAPI | 8317 | Proxy ChatGPT OAuth → OpenAI-compatible API (OpenFang provider) |
-| Paperclip | 3100 | Project management — company, goals, issues, budget tracking |
-| Orchestrator | — | Telegram bot, debate engine, sync layer |
+| Service | Port | Vai trò | Agents |
+|---------|------|---------|--------|
+| **Paperclip** | 3100 | **Backbone** — thiết kế, code, test, budget, issues | CTO, Engineer, QA |
+| **OpenFang** | 4200 | **Reviewer** — phản biện, security, tối ưu kiến trúc | Critic |
+| CLIProxyAPI | 8317 | Proxy ChatGPT → OpenAI-compatible API | — |
+| Orchestrator | — | Telegram bot, debate referee, sync layer | — |
+
+### Debate CTO ↔ Critic (cross-system)
+
+```
+Idea → Orchestrator
+         │
+    ┌────▼────┐        ┌────────────┐
+    │Paperclip│ design  │  OpenFang  │
+    │  CTO    │────────▶│   Critic   │
+    │ (o3)    │◀────────│  (gpt-4o)  │
+    │         │ review  │            │
+    └─────────┘        └────────────┘
+         │
+    2-6 rounds → agree → /approve → Engineer code → QA test
+```
 
 ## Cài đặt (Windows)
 
@@ -112,31 +133,32 @@ Gõ trong **topic cha** của mỗi project:
 | Lệnh | Mô tả |
 |-------|-------|
 | `/idea <mô tả>` | Tạo project mới + bắt đầu debate |
-| `/agents` | Xem danh sách agents (từ OpenFang) |
-| `/model <agent> <model>` | Đổi model cho agent (OpenFang) |
-| `/hire <slug> "<role>" [model]` | Tạo agent (OpenFang + Paperclip) |
-| `/fire <slug>` | Xóa agent (cả 2 hệ thống) |
-| `/pause <slug>` | Tạm dừng agent (OpenFang stop) |
-| `/resume <slug>` | Chạy lại agent (OpenFang reset) |
-| `/budget <slug> <cents>` | Đặt budget tháng (Paperclip) |
-| `/status` | Dashboard: OF agents + Paperclip tasks |
-| `/models` | Xem 51+ models khả dụng (OpenFang) |
-| `/kick <slug>` | Gửi wake message cho agent |
-| `/cost` | Chi phí token tháng này (OpenFang) |
+| `/agents` | Xem agents từ cả Paperclip (PC) và OpenFang (OF) |
+| `/model <agent> <model>` | Đổi model (auto detect PC/OF) |
+| `/hire <slug> "<role>" [model]` | Tạo agent — critic→OF, còn lại→PC |
+| `/fire <slug>` | Xóa agent (auto detect system) |
+| `/pause <slug>` | Tạm dừng agent |
+| `/resume <slug>` | Chạy lại agent |
+| `/budget <slug> <cents>` | Đặt budget tháng (Paperclip agents) |
+| `/status` | Dashboard: PC backbone + OF reviewer + tasks |
+| `/models` | Xem models khả dụng (OpenFang catalog) |
+| `/kick <slug>` | Gọi agent chạy ngay |
+| `/cost` | Chi phí: Paperclip ($$) + OpenFang (tokens) |
 | `/approve` | Duyệt → chuyển phase tiếp |
 | `/reject` | Reject → thiết kế lại |
 
-## Debate CTO ↔ Critic
+## Debate Flow (cross-system)
 
 Khi submit `/idea`, hệ thống tự động:
 
-1. Tạo company + agents trong Paperclip (budget tracking)
-2. Spawn CTO + Critic agents trong OpenFang (execution)
-3. Tạo 4 Telegram topics (parent + arch + code + test)
-4. CTO thiết kế kiến trúc via OpenFang agent (model: o3)
-5. Critic phản biện via OpenFang agent (model: gpt-4o)
-6. 2-6 rounds tranh luận, 30s cooldown mỗi round
-7. Khi thống nhất → báo user `/approve` hoặc `/reject`
+1. Paperclip tạo Company → Goal → Project → Issue hierarchy
+2. Paperclip spawn CTO, Engineer, QA agents (backbone, HTTP adapter → CLIProxyAPI)
+3. OpenFang spawn Critic agent (reviewer, TOML manifest → CLIProxyAPI)
+4. Tạo 4 Telegram forum topics
+5. **CTO (Paperclip, o3)** thiết kế kiến trúc
+6. **Critic (OpenFang, gpt-4o)** phản biện thiết kế
+7. 2-6 rounds tranh luận xuyên hệ thống, 30s cooldown
+8. Khi thống nhất → user `/approve` → **Engineer (Paperclip)** code → **QA (Paperclip)** test
 
 ### Quy tắc chống lặp
 
@@ -161,13 +183,13 @@ codex-ai-v2/
 ├── orchestrator/
 │   ├── main.py             # Entry point
 │   ├── config.py           # Env vars
-│   ├── openfang.py         # OpenFang REST API client
-│   ├── paperclip.py        # Paperclip API client
+│   ├── openfang.py         # OpenFang client (Critic reviewer)
+│   ├── paperclip.py        # Paperclip client (backbone + invoke_agent)
 │   ├── telegram_bot.py     # Telegram bot + handlers
 │   ├── topic_manager.py    # Topic auto-creation
-│   ├── debate.py           # CTO ↔ Critic state machine
-│   ├── commands.py         # /agents /model /hire etc.
-│   ├── agents.py           # Agent definitions, prompts, TOML builder
+│   ├── debate.py           # Cross-system CTO↔Critic debate
+│   ├── commands.py         # /agents /model /hire etc. (dual system)
+│   ├── agents.py           # Agents split by system + prompts
 │   └── kv.py               # JSON KV store (orchestrator state)
 ├── scripts/
 │   ├── install.ps1         # Windows installer

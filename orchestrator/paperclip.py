@@ -1,7 +1,37 @@
-"""Async client for the Paperclip REST API."""
+"""Async client for the Paperclip REST API — project management backbone.
+
+Paperclip manages agent definitions (HTTP adapter → CLIProxyAPI → ChatGPT),
+issues, projects, budgets.  The invoke_agent() method reads the agent's
+adapter config from Paperclip and makes the actual LLM call through it,
+so Paperclip is the single source of truth for model, system prompt, budget.
+"""
 
 import httpx
 from . import config
+
+
+def make_agent_config(
+    system_prompt: str,
+    model: str,
+    temperature: float = 0.7,
+    max_tokens: int = 4096,
+) -> dict:
+    """Build Paperclip adapterConfig that routes through CLIProxyAPI."""
+    return {
+        "url": f"{config.CLIPROXY_URL}/v1/chat/completions",
+        "headers": {
+            "Authorization": f"Bearer {config.CLIPROXY_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        "payloadTemplate": {
+            "model": model,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+            ],
+        },
+    }
 
 
 class PaperclipClient:
@@ -170,3 +200,37 @@ class PaperclipClient:
             )
             r.raise_for_status()
             return r.json()
+
+    async def invoke_agent(self, agent_id: str, message: str) -> str:
+        """Send a message to a Paperclip agent via its HTTP adapter.
+
+        Reads the agent's adapterConfig from Paperclip, appends the user
+        message to the payload template, calls the configured LLM endpoint
+        (CLIProxyAPI), and returns the assistant response.
+        Paperclip stays the source of truth for model, prompt, and budget.
+        """
+        # 1. Get agent config from Paperclip
+        async with self._client() as c:
+            r = await c.get(f"/api/agents/{agent_id}")
+            r.raise_for_status()
+            agent = r.json()
+
+        ac = agent.get("adapterConfig", agent.get("adapter_config", {}))
+        url = ac.get("url", f"{config.CLIPROXY_URL}/v1/chat/completions")
+        headers = ac.get("headers", {
+            "Authorization": f"Bearer {config.CLIPROXY_API_KEY}",
+            "Content-Type": "application/json",
+        })
+        payload = dict(ac.get("payloadTemplate", {}))
+
+        # 2. Append user message to the conversation
+        messages = list(payload.get("messages", []))
+        messages.append({"role": "user", "content": message})
+        payload["messages"] = messages
+
+        # 3. Call LLM via the agent's configured endpoint
+        async with httpx.AsyncClient(timeout=300) as c:
+            r = await c.post(url, headers=headers, json=payload)
+            r.raise_for_status()
+            data = r.json()
+            return data["choices"][0]["message"]["content"]

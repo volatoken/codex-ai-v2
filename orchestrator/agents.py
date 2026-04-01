@@ -1,4 +1,13 @@
-"""Agent definitions, system prompts, and OpenFang TOML manifest builder."""
+"""Agent definitions — split by system.
+
+Paperclip agents (CTO, Engineer, QA) = backbone, code completion.
+  → use HTTP adapter → CLIProxyAPI → ChatGPT
+  → managed via Paperclip API (budget, issues, lifecycle)
+
+OpenFang agents (Critic) = review & optimization.
+  → use OpenFang TOML manifest → CLIProxyAPI provider → ChatGPT
+  → managed via OpenFang API (spawn, message, model switch)
+"""
 
 from . import config
 
@@ -104,6 +113,7 @@ DEFAULT_AGENTS = {
         "model": config.DEFAULT_MODEL_CTO,
         "system_prompt": CTO_SYSTEM_PROMPT,
         "budget_monthly_cents": 500,
+        "system": "paperclip",  # backbone
     },
     "critic": {
         "name": "critic",
@@ -112,6 +122,7 @@ DEFAULT_AGENTS = {
         "model": config.DEFAULT_MODEL_CRITIC,
         "system_prompt": CRITIC_SYSTEM_PROMPT,
         "budget_monthly_cents": 300,
+        "system": "openfang",  # reviewer
     },
     "engineer": {
         "name": "engineer",
@@ -120,6 +131,7 @@ DEFAULT_AGENTS = {
         "model": config.DEFAULT_MODEL_ENGINEER,
         "system_prompt": ENGINEER_SYSTEM_PROMPT,
         "budget_monthly_cents": 500,
+        "system": "paperclip",  # backbone
     },
     "qa": {
         "name": "qa",
@@ -128,5 +140,10 @@ DEFAULT_AGENTS = {
         "model": config.DEFAULT_MODEL_QA,
         "system_prompt": QA_SYSTEM_PROMPT,
         "budget_monthly_cents": 300,
+        "system": "paperclip",  # backbone
     },
 }
+
+# Convenience filters
+PAPERCLIP_AGENTS = {k: v for k, v in DEFAULT_AGENTS.items() if v["system"] == "paperclip"}
+OPENFANG_AGENTS = {k: v for k, v in DEFAULT_AGENTS.items() if v["system"] == "openfang"}

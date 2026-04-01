@@ -1,6 +1,6 @@
 """Telegram command handlers — topic cha = control panel.
 
-Uses OpenFang for agent execution and Paperclip for project management.
+Uses Paperclip as backbone (CTO, Engineer, QA) and OpenFang for Critic.
 """
 
 import re
@@ -11,10 +11,19 @@ from telegram.ext import ContextTypes
 from . import config, kv
 from .agents import build_manifest, SYSTEM_PROMPTS, DEFAULT_AGENTS
 from .openfang import OpenFangClient
-from .paperclip import PaperclipClient
+from .paperclip import PaperclipClient, make_agent_config
 
 paperclip = PaperclipClient()
 openfang = OpenFangClient()
+
+
+def _agent_system(slug: str, name: str) -> str:
+    """Return 'paperclip' or 'openfang' based on where the agent lives."""
+    if kv.get(f"project:{slug}:pc_agents:{name}"):
+        return "paperclip"
+    if kv.get(f"project:{slug}:of_agents:{name}"):
+        return "openfang"
+    return ""
 
 
 # ── /agents ──────────────────────────────────────────────────
@@ -24,26 +33,43 @@ async def cmd_agents(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not slug:
         return await _reply(update, "\U0001f4ce Không tìm thấy project cho topic này.")
 
+    company_id = kv.get(f"project:{slug}:company_id")
+    lines = ["\U0001f4ce Agents", "\u2501" * 30]
+
+    # Paperclip agents (backbone: CTO, Engineer, QA)
+    try:
+        pc_agents = await paperclip.get_agents(company_id) if company_id else []
+        for a in pc_agents:
+            icon = {"active": "\U0001f7e2", "paused": "\u23f8"}.get(
+                a.get("status", ""), "\u26aa"
+            )
+            model = kv.get(f"project:{slug}:model:{a.get('role', a['name']).lower()}", "?")
+            spent = a.get("spentMonthlyCents", 0)
+            budget = a.get("budgetMonthlyCents", 0)
+            lines.append(
+                f"{icon} {a['name']:10s}\u2502 PC \u2502 {model:12s}\u2502 "
+                f"${spent / 100:.2f}/${budget / 100:.2f}"
+            )
+    except Exception:
+        lines.append("  (Paperclip unavailable)")
+
+    # OpenFang agents (reviewer: Critic)
     try:
         of_agents = await openfang.list_agents()
-    except Exception as exc:
-        return await _reply(update, f"\U0001f4ce Lỗi OpenFang: {exc}")
+        for a in of_agents:
+            icon = {"active": "\U0001f7e2", "running": "\U0001f504"}.get(
+                a.get("status", ""), "\u26aa"
+            )
+            model = a.get("model", {}).get("model", "?") if isinstance(a.get("model"), dict) else a.get("model", "?")
+            name = a.get("name", "?")
+            lines.append(f"{icon} {name:10s}\u2502 OF \u2502 {model:12s}\u2502")
+    except Exception:
+        lines.append("  (OpenFang unavailable)")
 
-    if not of_agents:
+    if len(lines) <= 2:
         return await _reply(update, "\U0001f4ce Chưa có agent nào.")
 
-    lines = ["\U0001f4ce Agents", "\u2501" * 24]
-    for a in of_agents:
-        icon = {
-            "active": "\U0001f7e2", "idle": "\U0001f7e2",
-            "running": "\U0001f504", "paused": "\u23f8",
-            "error": "\U0001f534",
-        }.get(a.get("status", ""), "\u26aa")
-        model = a.get("model", {}).get("model", "?") if isinstance(a.get("model"), dict) else a.get("model", "?")
-        name = a.get("name", "?")
-        lines.append(f"{icon} {name:12s}\u2502 {model:15s}")
-    lines.append("\n\u0110\u1ed5i model: /model <agent> <model>")
-    lines.append('Tạo mới:   /hire <slug> "<role>" [model]')
+    lines.append("\nPC = Paperclip (backbone)  OF = OpenFang (reviewer)")
     await _reply(update, "\n".join(lines))
 
 
@@ -59,18 +85,28 @@ async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await _reply(update, "\U0001f4ce /model <agent> <model>")
 
     agent_name, new_model = args[0].lower(), args[1]
+    system = _agent_system(slug, agent_name)
 
-    of_agent_id = kv.get(f"project:{slug}:of_agents:{agent_name}")
-    if not of_agent_id:
+    if not system:
         return await _reply(update, f"\U0001f4ce Agent '{agent_name}' không tồn tại.")
 
     try:
         old_model = kv.get(f"project:{slug}:model:{agent_name}", "?")
-        await openfang.switch_model(of_agent_id, new_model)
+        if system == "openfang":
+            of_id = kv.get(f"project:{slug}:of_agents:{agent_name}")
+            await openfang.switch_model(of_id, new_model)
+        else:
+            # Paperclip: update adapter config with new model
+            pc_id = kv.get(f"project:{slug}:pc_agents:{agent_name}")
+            prompt = SYSTEM_PROMPTS.get(agent_name, "")
+            await paperclip.update_agent(
+                pc_id, {"adapterConfig": make_agent_config(prompt, new_model)}
+            )
         kv.set(f"project:{slug}:model:{agent_name}", new_model)
+        sys_label = "OF" if system == "openfang" else "PC"
         await _reply(
             update,
-            f"\U0001f4ce \u2705 {agent_name} model: {old_model} \u2192 {new_model}",
+            f"\U0001f4ce \u2705 {agent_name} [{sys_label}] model: {old_model} \u2192 {new_model}",
         )
     except Exception as exc:
         await _reply(update, f"\U0001f4ce Lỗi: {exc}")
@@ -94,35 +130,40 @@ async def cmd_hire(update: Update, context: ContextTypes.DEFAULT_TYPE):
     role = match.group(2)
     model = match.group(3) or config.DEFAULT_MODEL_ENGINEER
     company_id = kv.get(f"project:{slug}:company_id")
+    prompt = SYSTEM_PROMPTS.get(role.lower(), f"Bạn là {role}.")
+
+    # Determine system: "critic" or "reviewer" roles → OpenFang, rest → Paperclip
+    is_reviewer = role.lower() in ("critic", "reviewer", "security")
 
     try:
-        # 1. Spawn in OpenFang
-        prompt = SYSTEM_PROMPTS.get(role.lower(), f"Bạn là {role}.")
-        manifest = build_manifest(agent_slug, role, model)
-        of_agent = await openfang.spawn_agent(manifest)
-        of_id = of_agent["id"]
-        await openfang.update_agent(of_id, system_prompt=prompt)
+        if is_reviewer:
+            # OpenFang reviewer
+            manifest = build_manifest(agent_slug, role, model)
+            of_agent = await openfang.spawn_agent(manifest)
+            of_id = of_agent["id"]
+            await openfang.update_agent(of_id, system_prompt=prompt)
+            kv.set(f"project:{slug}:of_agents:{agent_slug}", of_id)
+            sys_label = "OF"
+        else:
+            # Paperclip backbone
+            pc_agent = await paperclip.create_agent(
+                company_id,
+                {
+                    "name": agent_slug.capitalize(),
+                    "role": role,
+                    "adapterType": "http",
+                    "adapterConfig": make_agent_config(prompt, model),
+                    "budgetMonthlyCents": 500,
+                },
+            )
+            kv.set(f"project:{slug}:pc_agents:{agent_slug}", pc_agent["id"])
+            sys_label = "PC"
 
-        # 2. Register in Paperclip for budget tracking
-        pc_agent = await paperclip.create_agent(
-            company_id,
-            {
-                "name": agent_slug.capitalize(),
-                "role": role,
-                "adapterType": "http",
-                "budgetMonthlyCents": 500,
-            },
-        )
-
-        # 3. Save mappings
-        kv.set(f"project:{slug}:of_agents:{agent_slug}", of_id)
-        kv.set(f"project:{slug}:pc_agents:{agent_slug}", pc_agent["id"])
         kv.set(f"project:{slug}:model:{agent_slug}", model)
         await _reply(
             update,
             f"\U0001f4ce \u2705 Hired: {agent_slug.capitalize()} ({model})\n"
-            f"   Role: {role}\n"
-            f"   Budget: $5.00/tháng\n"
+            f"   Role: {role}  System: {sys_label}\n"
             f"   /fire {agent_slug} để xóa",
         )
     except Exception as exc:
@@ -165,12 +206,15 @@ async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await _reply(update, "\U0001f4ce /pause <agent>")
 
     name = args[0].lower()
-    of_id = kv.get(f"project:{slug}:of_agents:{name}")
-    if not of_id:
+    system = _agent_system(slug, name)
+    if not system:
         return await _reply(update, f"\U0001f4ce Agent '{args[0]}' không tồn tại.")
 
     try:
-        await openfang.stop_agent(of_id)
+        if system == "openfang":
+            await openfang.stop_agent(kv.get(f"project:{slug}:of_agents:{name}"))
+        else:
+            await paperclip.pause_agent(kv.get(f"project:{slug}:pc_agents:{name}"))
         await _reply(update, f"\U0001f4ce \u23f8 Paused: {args[0]}")
     except Exception as exc:
         await _reply(update, f"\U0001f4ce Lỗi: {exc}")
@@ -183,12 +227,15 @@ async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await _reply(update, "\U0001f4ce /resume <agent>")
 
     name = args[0].lower()
-    of_id = kv.get(f"project:{slug}:of_agents:{name}")
-    if not of_id:
+    system = _agent_system(slug, name)
+    if not system:
         return await _reply(update, f"\U0001f4ce Agent '{args[0]}' không tồn tại.")
 
     try:
-        await openfang.reset_session(of_id)
+        if system == "openfang":
+            await openfang.reset_session(kv.get(f"project:{slug}:of_agents:{name}"))
+        else:
+            await paperclip.resume_agent(kv.get(f"project:{slug}:pc_agents:{name}"))
         await _reply(update, f"\U0001f4ce \u2705 Resumed: {args[0]}")
     except Exception as exc:
         await _reply(update, f"\U0001f4ce Lỗi: {exc}")
@@ -233,18 +280,19 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title = kv.get(f"project:{slug}:title", slug)
 
     try:
-        of_agents = await openfang.list_agents()
-        of_status = await openfang.status()
         dash = await paperclip.get_dashboard(company_id) if company_id else {}
+        of_agents = await openfang.list_agents()
+        pc_count = dash.get("activeAgents", 0)
         await _reply(
             update,
             f"\U0001f4ce Dashboard — {title}\n"
             + "\u2501" * 28
-            + f"\n\U0001f4ca Phase:      {phase}"
-            f"\n\U0001f916 OF Agents:  {len(of_agents)} running"
-            f"\n\U0001f4cb Tasks:      {dash.get('openIssues', 0)} open "
+            + f"\n\U0001f4ca Phase:       {phase}"
+            f"\n\U0001f4ce PC Agents:   {pc_count} (backbone)"
+            f"\n\U0001f50d OF Agents:   {len(of_agents)} (reviewer)"
+            f"\n\U0001f4cb Tasks:       {dash.get('openIssues', 0)} open "
             f"\u2502 {dash.get('doneIssues', 0)} done"
-            f"\n\U0001f4b0 Tháng này:  "
+            f"\n\U0001f4b0 Tháng này:   "
             f"${dash.get('monthSpendCents', 0) / 100:.2f}",
         )
     except Exception as exc:
@@ -275,15 +323,21 @@ async def cmd_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not slug or not args:
         return await _reply(update, "\U0001f4ce /kick <agent>")
 
-    of_id = kv.get(f"project:{slug}:of_agents:{args[0].lower()}")
-    if not of_id:
+    name = args[0].lower()
+    system = _agent_system(slug, name)
+    if not system:
         return await _reply(update, f"\U0001f4ce Agent '{args[0]}' không tồn tại.")
 
     try:
-        await openfang.send_message(of_id, "Wake up — user kicked you. Report status.")
+        if system == "openfang":
+            of_id = kv.get(f"project:{slug}:of_agents:{name}")
+            await openfang.send_message(of_id, "Wake up — user kicked you. Report status.")
+        else:
+            pc_id = kv.get(f"project:{slug}:pc_agents:{name}")
+            await paperclip.invoke_heartbeat(pc_id)
         await _reply(
             update,
-            f"\U0001f4ce \U0001f504 Kicked: {args[0]} — wake message sent",
+            f"\U0001f4ce \U0001f504 Kicked: {args[0]} — wake invoked",
         )
     except Exception as exc:
         await _reply(update, f"\U0001f4ce Lỗi: {exc}")
@@ -296,21 +350,24 @@ async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not slug:
         return await _reply(update, "\U0001f4ce Không tìm thấy project.")
 
+    company_id = kv.get(f"project:{slug}:company_id")
+    lines = ["\U0001f4ce Chi phí tháng này", "\u2501" * 28]
+
+    # Paperclip costs (backbone agents)
+    try:
+        costs = await paperclip.get_cost_summary(company_id)
+        lines.append(f"Paperclip (backbone): ${costs.get('totalCents', 0) / 100:.2f}")
+    except Exception:
+        lines.append("Paperclip: unavailable")
+
+    # OpenFang costs (reviewer agents)
     try:
         usage = await openfang.get_usage("month")
-        by_model = await openfang.get_usage_by_model()
-        lines = [
-            "\U0001f4ce Chi phí tháng này (OpenFang)",
-            "\u2501" * 28,
-            f"Tokens: {usage.get('total_tokens', 0):,}",
-        ]
-        for m in by_model[:10]:
-            name = m.get("model", "?")
-            tokens = m.get("tokens", 0)
-            lines.append(f"  \u2022 {name}: {tokens:,} tokens")
-        await _reply(update, "\n".join(lines))
-    except Exception as exc:
-        await _reply(update, f"\U0001f4ce Lỗi: {exc}")
+        lines.append(f"OpenFang (reviewer):  {usage.get('total_tokens', 0):,} tokens")
+    except Exception:
+        lines.append("OpenFang: unavailable")
+
+    await _reply(update, "\n".join(lines))
 
 
 # ── utilities ────────────────────────────────────────────────

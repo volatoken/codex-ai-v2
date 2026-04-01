@@ -1,4 +1,4 @@
-"""CTO ↔ Critic debate state machine.
+"""CTO ↔ Critic cross-system debate state machine.
 
 Rules
 ─────
@@ -8,8 +8,10 @@ Rules
 4. After 4 rounds with >2 open issues → escalate to user.
 5. 30 s cooldown between rounds.
 
-Execution: CTO and Critic are OpenFang agents.
-Orchestrator sends messages via OpenFang API → agents call LLM → return text.
+Execution:
+  CTO = Paperclip agent (backbone) — HTTP adapter → CLIProxyAPI → ChatGPT
+  Critic = OpenFang agent (reviewer) — OpenFang API → CLIProxyAPI → ChatGPT
+Two different systems debating each other, orchestrator is the referee.
 """
 
 import asyncio
@@ -21,6 +23,7 @@ from typing import Callable, Awaitable
 
 from . import config, kv
 from .openfang import OpenFangClient
+from .paperclip import PaperclipClient
 
 
 class DebateState(str, Enum):
@@ -130,11 +133,21 @@ SendFn = Callable[[int, str], Awaitable[None]]
 
 
 class DebateManager:
-    """Orchestrates the CTO ↔ Critic debate loop via OpenFang agents."""
+    """Orchestrates the CTO ↔ Critic cross-system debate.
 
-    def __init__(self, send_message: SendFn, openfang: OpenFangClient) -> None:
+    CTO (Paperclip backbone) ↔ Critic (OpenFang reviewer).
+    Orchestrator is the referee — routes messages between the two systems.
+    """
+
+    def __init__(
+        self,
+        send_message: SendFn,
+        paperclip: PaperclipClient,
+        openfang: OpenFangClient,
+    ) -> None:
         self.send_message = send_message
-        self.of = openfang
+        self.pc = paperclip   # CTO, Engineer, QA
+        self.of = openfang    # Critic
 
     # ── public entry points ──────────────────────────────────
 
@@ -281,17 +294,19 @@ class DebateManager:
                 debate.save()
                 await asyncio.sleep(config.DEBATE_COOLDOWN_SEC)
 
-    # ── LLM calls via OpenFang agents ────────────────────────
+    # ── LLM calls — cross-system ───────────────────────────────
+    # CTO = Paperclip agent (backbone) → invoke via HTTP adapter → CLIProxyAPI
+    # Critic = OpenFang agent (reviewer) → invoke via OpenFang API
 
     async def _call_cto(self, context: str, debate: Debate) -> str:
-        cto_id = kv.get(f"project:{debate.slug}:of_agents:cto")
+        cto_id = kv.get(f"project:{debate.slug}:pc_agents:cto")
         if not cto_id:
-            raise RuntimeError(f"OpenFang CTO agent not found for {debate.slug}")
+            raise RuntimeError(f"Paperclip CTO agent not found for {debate.slug}")
         message = (
             f"[Round {debate.round}, Design v"
             f"{len(debate.design_history) + 1}]\n\n{context}"
         )
-        return await self.of.send_message(cto_id, message)
+        return await self.pc.invoke_agent(cto_id, message)
 
     async def _call_critic(self, design: str, debate: Debate) -> str:
         critic_id = kv.get(f"project:{debate.slug}:of_agents:critic")

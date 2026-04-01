@@ -9,7 +9,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from . import config, kv
-from .agents import build_manifest, SYSTEM_PROMPTS, DEFAULT_AGENTS, REVIEWER_ROLES, REVIEWER_TOOLS
+from .agents import build_manifest, SYSTEM_PROMPTS, DEFAULT_AGENTS, OPENFANG_REVIEWER_ROLES
 from .openfang import OpenFangClient
 from .paperclip import PaperclipClient, make_agent_config
 
@@ -34,42 +34,59 @@ async def cmd_agents(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await _reply(update, "\U0001f4ce Không tìm thấy project cho topic này.")
 
     company_id = kv.get(f"project:{slug}:company_id")
-    lines = ["\U0001f4ce Agents", "\u2501" * 30]
+    lines = ["\U0001f4ce Agents", "\u2501" * 34]
+
+    pc_ok, of_ok = True, True
 
     # Paperclip agents (backbone: CTO, Engineer, QA)
     try:
         pc_agents = await paperclip.get_agents(company_id) if company_id else []
+        if pc_agents:
+            lines.append("\U0001f3d7 Paperclip (backbone):")
         for a in pc_agents:
             icon = {"active": "\U0001f7e2", "paused": "\u23f8"}.get(
                 a.get("status", ""), "\u26aa"
             )
-            model = kv.get(f"project:{slug}:model:{a.get('role', a['name']).lower()}", "?")
+            name = a.get("name", "?")
+            role = a.get("role", "?")
+            model = kv.get(
+                f"project:{slug}:model:{role.lower()}", "?"
+            )
             spent = a.get("spentMonthlyCents", 0)
             budget = a.get("budgetMonthlyCents", 0)
             lines.append(
-                f"{icon} {a['name']:10s}\u2502 PC \u2502 {model:12s}\u2502 "
+                f"  {icon} {name:10s} {model:14s} "
                 f"${spent / 100:.2f}/${budget / 100:.2f}"
             )
     except Exception:
-        lines.append("  (Paperclip unavailable)")
+        pc_ok = False
+        lines.append("  \u26a0 Paperclip unavailable")
 
-    # OpenFang agents (reviewer: Critic)
+    # OpenFang agents (reviewer: Critic, Security, Performance)
     try:
         of_agents = await openfang.list_agents()
+        if of_agents:
+            lines.append("\U0001f50d OpenFang (reviewer):")
         for a in of_agents:
             icon = {"active": "\U0001f7e2", "running": "\U0001f504"}.get(
                 a.get("status", ""), "\u26aa"
             )
-            model = a.get("model", {}).get("model", "?") if isinstance(a.get("model"), dict) else a.get("model", "?")
+            model = (
+                a["model"]["model"]
+                if isinstance(a.get("model"), dict)
+                else a.get("model", "?")
+            )
             name = a.get("name", "?")
-            lines.append(f"{icon} {name:10s}\u2502 OF \u2502 {model:12s}\u2502")
+            lines.append(f"  {icon} {name:10s} {model:14s}")
     except Exception:
-        lines.append("  (OpenFang unavailable)")
+        of_ok = False
+        lines.append("  \u26a0 OpenFang unavailable")
 
-    if len(lines) <= 2:
-        return await _reply(update, "\U0001f4ce Chưa có agent nào.")
+    if not pc_ok and not of_ok:
+        return await _reply(update, "\U0001f4ce Cả 2 hệ thống đều unavailable.")
 
-    lines.append("\nPC = Paperclip (backbone)  OF = OpenFang (reviewer)")
+    lines.append("")
+    lines.append("\U0001f3d7 = backbone (code)  \U0001f50d = reviewer (audit)")
     await _reply(update, "\n".join(lines))
 
 
@@ -132,13 +149,13 @@ async def cmd_hire(update: Update, context: ContextTypes.DEFAULT_TYPE):
     company_id = kv.get(f"project:{slug}:company_id")
     prompt = SYSTEM_PROMPTS.get(role.lower(), f"Bạn là {role}.")
 
-    # Determine system: reviewer roles → OpenFang, rest → Paperclip backbone
-    is_reviewer = role.lower() in REVIEWER_ROLES
+    # Determine system: reviewer/guard roles → OpenFang, rest → Paperclip backbone
+    is_reviewer = role.lower() in OPENFANG_REVIEWER_ROLES
 
     try:
         if is_reviewer:
-            # OpenFang reviewer (with web_search, code_scan tools)
-            manifest = build_manifest(agent_slug, role, model, tools=REVIEWER_TOOLS)
+            # OpenFang reviewer
+            manifest = build_manifest(agent_slug, role, model)
             of_agent = await openfang.spawn_agent(manifest)
             of_id = of_agent["id"]
             await openfang.update_agent(of_id, system_prompt=prompt)
@@ -281,22 +298,26 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         dash = await paperclip.get_dashboard(company_id) if company_id else {}
+    except Exception:
+        dash = {}
+    try:
         of_agents = await openfang.list_agents()
-        pc_count = dash.get("activeAgents", 0)
-        await _reply(
-            update,
-            f"\U0001f4ce Dashboard — {title}\n"
-            + "\u2501" * 28
-            + f"\n\U0001f4ca Phase:       {phase}"
-            f"\n\U0001f4ce PC Agents:   {pc_count} (backbone)"
-            f"\n\U0001f50d OF Agents:   {len(of_agents)} (reviewer)"
-            f"\n\U0001f4cb Tasks:       {dash.get('openIssues', 0)} open "
-            f"\u2502 {dash.get('doneIssues', 0)} done"
-            f"\n\U0001f4b0 Tháng này:   "
-            f"${dash.get('monthSpendCents', 0) / 100:.2f}",
-        )
-    except Exception as exc:
-        await _reply(update, f"\U0001f4ce Lỗi: {exc}")
+    except Exception:
+        of_agents = []
+
+    pc_count = dash.get("activeAgents", 0)
+    await _reply(
+        update,
+        f"\U0001f4ce Dashboard — {title}\n"
+        + "\u2501" * 28
+        + f"\n\U0001f4ca Phase:       {phase}"
+        f"\n\U0001f3d7 Backbone:   {pc_count} agents (Paperclip)"
+        f"\n\U0001f50d Reviewer:   {len(of_agents)} agents (OpenFang)"
+        f"\n\U0001f4cb Tasks:       {dash.get('openIssues', 0)} open "
+        f"\u2502 {dash.get('doneIssues', 0)} done"
+        f"\n\U0001f4b0 Tháng này:   "
+        f"${dash.get('monthSpendCents', 0) / 100:.2f}",
+    )
 
 
 # ── /models ──────────────────────────────────────────────────
@@ -353,19 +374,26 @@ async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE):
     company_id = kv.get(f"project:{slug}:company_id")
     lines = ["\U0001f4ce Chi phí tháng này", "\u2501" * 28]
 
-    # Paperclip costs (backbone agents)
+    # Paperclip costs (backbone agents with budget)
     try:
-        costs = await paperclip.get_cost_summary(company_id)
-        lines.append(f"Paperclip (backbone): ${costs.get('totalCents', 0) / 100:.2f}")
+        costs = await paperclip.get_cost_summary(company_id) if company_id else {}
+        pc_total = costs.get("totalCents", 0)
+        lines.append(f"\U0001f3d7 Backbone:  ${pc_total / 100:.2f}")
     except Exception:
-        lines.append("Paperclip: unavailable")
+        lines.append("\U0001f3d7 Backbone:  unavailable")
 
-    # OpenFang costs (reviewer agents)
+    # OpenFang costs (reviewer agents by tokens)
     try:
         usage = await openfang.get_usage("month")
-        lines.append(f"OpenFang (reviewer):  {usage.get('total_tokens', 0):,} tokens")
+        by_model = await openfang.get_usage_by_model()
+        tokens = usage.get("total_tokens", 0)
+        lines.append(f"\U0001f50d Reviewer:  {tokens:,} tokens")
+        for m in by_model[:5]:
+            mname = m.get("model", "?")
+            mtokens = m.get("tokens", 0)
+            lines.append(f"   \u2022 {mname}: {mtokens:,}")
     except Exception:
-        lines.append("OpenFang: unavailable")
+        lines.append("\U0001f50d Reviewer:  unavailable")
 
     await _reply(update, "\n".join(lines))
 

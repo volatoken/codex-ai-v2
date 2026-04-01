@@ -4,12 +4,21 @@ Paperclip agents (CTO, Engineer, QA) = backbone, code completion.
   → use HTTP adapter → CLIProxyAPI → ChatGPT
   → managed via Paperclip API (budget, issues, lifecycle)
 
-OpenFang agents (Critic) = review & optimization.
+OpenFang agents (Critic, Security, Performance) = review & optimization.
   → use OpenFang TOML manifest → CLIProxyAPI provider → ChatGPT
   → managed via OpenFang API (spawn, message, model switch)
+  → have 38 built-in tools (web search, fetch...) + per-agent KV memory
 """
 
 from . import config
+
+# ── Roles that go to OpenFang (reviewer/guard) ───────────────
+# Used by /hire auto-detect: if role matches → spawn in OpenFang
+# Everything else → Paperclip backbone
+OPENFANG_REVIEWER_ROLES = frozenset({
+    "critic", "reviewer", "security", "security-auditor",
+    "performance", "performance-reviewer", "auditor", "guard",
+})
 
 CTO_SYSTEM_PROMPT = (
     "Bạn là CTO. Nhiệm vụ:\n"
@@ -70,30 +79,35 @@ QA_SYSTEM_PROMPT = (
 
 SECURITY_SYSTEM_PROMPT = (
     "Bạn là Security Auditor. Nhiệm vụ:\n"
-    "1. Nhận code/kiến trúc → audit bảo mật theo OWASP Top 10\n"
-    "2. Kiểm tra: injection, auth bypass, data exposure, SSRF, CSRF\n"
-    "3. Mỗi finding: severity (Critical/High/Medium/Low), mô tả, fix\n"
-    "4. Dùng web_search để tra CVE và best practices mới nhất\n\n"
+    "1. Nhận kiến trúc/code → audit bảo mật theo OWASP Top 10\n"
+    "2. Tìm vulnerabilities: injection, auth bypass, data exposure\n"
+    "3. Mỗi finding: severity (CRITICAL/HIGH/MEDIUM/LOW), mô tả, fix\n"
+    "4. Đề xuất security hardening nếu cần\n\n"
+    "FOCUS: Authentication, Authorization, Input validation, "
+    "Encryption, Secret management, Dependency vulnerabilities\n\n"
     "OUTPUT FORMAT:\n"
     "📎🔒 Security Audit — Round N\n"
     "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    "🔴 [CRITICAL] title — mô tả + fix\n"
-    "🟡 [MEDIUM] title — mô tả + fix\n\n"
+    "① [CRITICAL] ...\n"
+    "② [HIGH] ...\n"
+    "③ [MEDIUM] ...\n\n"
     "Tổng: X findings (Y critical)"
 )
 
 PERFORMANCE_SYSTEM_PROMPT = (
     "Bạn là Performance Reviewer. Nhiệm vụ:\n"
-    "1. Nhận kiến trúc/code → phân tích bottleneck\n"
-    "2. Kiểm tra: N+1 queries, memory leaks, blocking I/O, cache miss\n"
-    "3. Benchmark estimates + optimization suggestions\n"
-    "4. Dùng web_search để tra benchmark data mới nhất\n\n"
+    "1. Nhận kiến trúc/code → review performance bottlenecks\n"
+    "2. Phân tích: time complexity, memory usage, I/O patterns\n"
+    "3. Mỗi issue: impact level, mô tả, đề xuất tối ưu\n"
+    "4. Benchmark suggestions nếu có\n\n"
+    "FOCUS: Query optimization, Caching strategy, Connection pooling, "
+    "Async patterns, Memory leaks, CDN/edge caching\n\n"
     "OUTPUT FORMAT:\n"
-    "📎⚡ Performance Review — Round N\n"
+    "📎⚡ Performance Review\n"
     "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    "① [BOTTLENECK] title — impact + fix\n"
-    "② [OPTIMIZE] title — giải pháp\n\n"
-    "Tổng: X issues, estimated improvement: Y%"
+    "① [BOTTLENECK] ...\n"
+    "② [OPTIMIZE] ...\n\n"
+    "Estimated impact: ..."
 )
 
 SYSTEM_PROMPTS = {
@@ -102,11 +116,12 @@ SYSTEM_PROMPTS = {
     "engineer": ENGINEER_SYSTEM_PROMPT,
     "qa": QA_SYSTEM_PROMPT,
     "security": SECURITY_SYSTEM_PROMPT,
+    "security-auditor": SECURITY_SYSTEM_PROMPT,
     "performance": PERFORMANCE_SYSTEM_PROMPT,
+    "performance-reviewer": PERFORMANCE_SYSTEM_PROMPT,
+    "reviewer": CRITIC_SYSTEM_PROMPT,
+    "auditor": SECURITY_SYSTEM_PROMPT,
 }
-
-# Roles that should live in OpenFang (reviewer/guard), rest → Paperclip backbone
-REVIEWER_ROLES = frozenset({"critic", "reviewer", "security", "auditor", "performance"})
 
 
 def build_manifest(
@@ -176,10 +191,6 @@ DEFAULT_AGENTS = {
         "system": "paperclip",  # backbone
     },
 }
-
-# Agent tool sets by role type
-REVIEWER_TOOLS = ["web_fetch", "web_search", "code_scan"]
-BACKBONE_TOOLS = ["web_fetch", "web_search"]
 
 # Convenience filters
 PAPERCLIP_AGENTS = {k: v for k, v in DEFAULT_AGENTS.items() if v["system"] == "paperclip"}

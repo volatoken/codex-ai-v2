@@ -26,8 +26,6 @@ DEFAULT_MODEL_CTO: str = os.getenv("DEFAULT_MODEL_CTO", "o3")
 DEFAULT_MODEL_ENGINEER: str = os.getenv("DEFAULT_MODEL_ENGINEER", "gpt-4o")
 DEFAULT_MODEL_QA: str = os.getenv("DEFAULT_MODEL_QA", "gpt-4o-mini")
 DEFAULT_MODEL_CRITIC: str = os.getenv("DEFAULT_MODEL_CRITIC", "gpt-4o")
-DEFAULT_MODEL_SECURITY: str = os.getenv("DEFAULT_MODEL_SECURITY", "gpt-4o")
-DEFAULT_MODEL_PERFORMANCE: str = os.getenv("DEFAULT_MODEL_PERFORMANCE", "gpt-4o-mini")
 
 # Debate engine
 DEBATE_MAX_ROUNDS: int = int(os.getenv("DEBATE_MAX_ROUNDS", "6"))

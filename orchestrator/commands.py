@@ -9,7 +9,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from . import config, kv
-from .agents import build_manifest, SYSTEM_PROMPTS, DEFAULT_AGENTS
+from .agents import build_manifest, SYSTEM_PROMPTS, DEFAULT_AGENTS, REVIEWER_ROLES, REVIEWER_TOOLS
 from .openfang import OpenFangClient
 from .paperclip import PaperclipClient, make_agent_config
 
@@ -132,13 +132,13 @@ async def cmd_hire(update: Update, context: ContextTypes.DEFAULT_TYPE):
     company_id = kv.get(f"project:{slug}:company_id")
     prompt = SYSTEM_PROMPTS.get(role.lower(), f"Bạn là {role}.")
 
-    # Determine system: "critic" or "reviewer" roles → OpenFang, rest → Paperclip
-    is_reviewer = role.lower() in ("critic", "reviewer", "security")
+    # Determine system: reviewer roles → OpenFang, rest → Paperclip backbone
+    is_reviewer = role.lower() in REVIEWER_ROLES
 
     try:
         if is_reviewer:
-            # OpenFang reviewer
-            manifest = build_manifest(agent_slug, role, model)
+            # OpenFang reviewer (with web_search, code_scan tools)
+            manifest = build_manifest(agent_slug, role, model, tools=REVIEWER_TOOLS)
             of_agent = await openfang.spawn_agent(manifest)
             of_id = of_agent["id"]
             await openfang.update_agent(of_id, system_prompt=prompt)

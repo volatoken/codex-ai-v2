@@ -68,12 +68,45 @@ QA_SYSTEM_PROMPT = (
     "4. Kết quả: TEST_RESULT: PASS hoặc TEST_RESULT: FAIL kèm lý do"
 )
 
+SECURITY_SYSTEM_PROMPT = (
+    "Bạn là Security Auditor. Nhiệm vụ:\n"
+    "1. Nhận code/kiến trúc → audit bảo mật theo OWASP Top 10\n"
+    "2. Kiểm tra: injection, auth bypass, data exposure, SSRF, CSRF\n"
+    "3. Mỗi finding: severity (Critical/High/Medium/Low), mô tả, fix\n"
+    "4. Dùng web_search để tra CVE và best practices mới nhất\n\n"
+    "OUTPUT FORMAT:\n"
+    "📎🔒 Security Audit — Round N\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "🔴 [CRITICAL] title — mô tả + fix\n"
+    "🟡 [MEDIUM] title — mô tả + fix\n\n"
+    "Tổng: X findings (Y critical)"
+)
+
+PERFORMANCE_SYSTEM_PROMPT = (
+    "Bạn là Performance Reviewer. Nhiệm vụ:\n"
+    "1. Nhận kiến trúc/code → phân tích bottleneck\n"
+    "2. Kiểm tra: N+1 queries, memory leaks, blocking I/O, cache miss\n"
+    "3. Benchmark estimates + optimization suggestions\n"
+    "4. Dùng web_search để tra benchmark data mới nhất\n\n"
+    "OUTPUT FORMAT:\n"
+    "📎⚡ Performance Review — Round N\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "① [BOTTLENECK] title — impact + fix\n"
+    "② [OPTIMIZE] title — giải pháp\n\n"
+    "Tổng: X issues, estimated improvement: Y%"
+)
+
 SYSTEM_PROMPTS = {
     "cto": CTO_SYSTEM_PROMPT,
     "critic": CRITIC_SYSTEM_PROMPT,
     "engineer": ENGINEER_SYSTEM_PROMPT,
     "qa": QA_SYSTEM_PROMPT,
+    "security": SECURITY_SYSTEM_PROMPT,
+    "performance": PERFORMANCE_SYSTEM_PROMPT,
 }
+
+# Roles that should live in OpenFang (reviewer/guard), rest → Paperclip backbone
+REVIEWER_ROLES = frozenset({"critic", "reviewer", "security", "auditor", "performance"})
 
 
 def build_manifest(
@@ -143,6 +176,10 @@ DEFAULT_AGENTS = {
         "system": "paperclip",  # backbone
     },
 }
+
+# Agent tool sets by role type
+REVIEWER_TOOLS = ["web_fetch", "web_search", "code_scan"]
+BACKBONE_TOOLS = ["web_fetch", "web_search"]
 
 # Convenience filters
 PAPERCLIP_AGENTS = {k: v for k, v in DEFAULT_AGENTS.items() if v["system"] == "paperclip"}

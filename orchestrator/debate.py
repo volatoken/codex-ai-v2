@@ -12,9 +12,15 @@ Execution:
   CTO = Paperclip agent (backbone) — HTTP adapter → CLIProxyAPI → ChatGPT
   Critic = OpenFang agent (reviewer) — OpenFang API → CLIProxyAPI → ChatGPT
 Two different systems debating each other, orchestrator is the referee.
+
+Optimizations:
+  - Critic stores review history in OpenFang per-agent KV memory
+  - After agreement, auto-create Paperclip issues from design for Engineer
+  - Graceful retry on individual system failure
 """
 
 import asyncio
+import logging
 import re
 import time
 from dataclasses import dataclass, field
@@ -24,6 +30,8 @@ from typing import Callable, Awaitable
 from . import config, kv
 from .openfang import OpenFangClient
 from .paperclip import PaperclipClient
+
+logger = logging.getLogger(__name__)
 
 
 class DebateState(str, Enum):
@@ -294,9 +302,10 @@ class DebateManager:
                 debate.save()
                 await asyncio.sleep(config.DEBATE_COOLDOWN_SEC)
 
-    # ── LLM calls — cross-system ───────────────────────────────
+    # ── LLM calls — cross-system with retry ──────────────────
     # CTO = Paperclip agent (backbone) → invoke via HTTP adapter → CLIProxyAPI
     # Critic = OpenFang agent (reviewer) → invoke via OpenFang API
+    # One retry on transient failure before raising.
 
     async def _call_cto(self, context: str, debate: Debate) -> str:
         cto_id = kv.get(f"project:{debate.slug}:pc_agents:cto")
@@ -306,17 +315,46 @@ class DebateManager:
             f"[Round {debate.round}, Design v"
             f"{len(debate.design_history) + 1}]\n\n{context}"
         )
-        return await self.pc.invoke_agent(cto_id, message)
+        try:
+            return await self.pc.invoke_agent(cto_id, message)
+        except Exception as exc:
+            logger.warning("CTO call failed, retrying: %s", exc)
+            await asyncio.sleep(3)
+            return await self.pc.invoke_agent(cto_id, message)
 
     async def _call_critic(self, design: str, debate: Debate) -> str:
         critic_id = kv.get(f"project:{debate.slug}:of_agents:critic")
         if not critic_id:
             raise RuntimeError(f"OpenFang Critic agent not found for {debate.slug}")
+
+        # Load past review summary from Critic's KV memory
+        past_reviews = ""
+        try:
+            prev = await self.of.kv_get(critic_id, "review_history")
+            if prev:
+                past_reviews = f"\n\n[Past reviews summary]\n{prev}\n"
+        except Exception:
+            pass  # KV unavailable — proceed without memory
+
         message = (
-            f"[Round {debate.round}]\n\n"
+            f"[Round {debate.round}]{past_reviews}\n\n"
             f"Thiết kế CTO:\n\n{design}"
         )
-        return await self.of.send_message(critic_id, message)
+        try:
+            response = await self.of.send_message(critic_id, message)
+        except Exception as exc:
+            logger.warning("Critic call failed, retrying: %s", exc)
+            await asyncio.sleep(3)
+            response = await self.of.send_message(critic_id, message)
+
+        # Save this review to Critic's KV memory for future rounds
+        try:
+            summary = response[:500] if len(response) > 500 else response
+            await self.of.kv_set(critic_id, "review_history", summary)
+        except Exception:
+            pass  # KV unavailable — non-critical
+
+        return response
 
     # ── context builders ─────────────────────────────────────
 
@@ -379,6 +417,55 @@ class DebateManager:
             f"   /approve  \u2192 chuyển sang phase Code\n"
             f"   /reject   \u2192 yêu cầu thiết kế lại",
         )
+
+        # Auto-create Paperclip issues from the final design
+        await self._create_issues_from_design(debate)
+
+    async def _create_issues_from_design(self, debate: Debate) -> None:
+        """Parse the final design and create Paperclip issues for Engineer."""
+        slug = debate.slug
+        company_id = kv.get(f"project:{slug}:company_id")
+        project_id = kv.get(f"project:{slug}:project_id")
+        goal_id = kv.get(f"project:{slug}:goal_id")
+        if not company_id or not project_id:
+            return
+
+        # Create implementation issues from each resolved debate issue
+        for issue in debate.resolved_issues:
+            try:
+                await self.pc.create_issue(
+                    company_id,
+                    {
+                        "title": f"Implement: {issue.title}",
+                        "description": (
+                            f"Từ debate architecture (resolved round {debate.round}).\n"
+                            f"CTO response: {issue.cto_response or 'accepted'}"
+                        ),
+                        "projectId": project_id,
+                        "goalId": goal_id,
+                        "status": "todo",
+                        "priority": "medium",
+                    },
+                )
+            except Exception:
+                logger.warning("Failed to create issue for: %s", issue.title)
+
+        # Create a summary issue with the final design
+        if debate.design_history:
+            try:
+                await self.pc.create_issue(
+                    company_id,
+                    {
+                        "title": f"Final Architecture — {slug}",
+                        "description": debate.design_history[-1][:4000],
+                        "projectId": project_id,
+                        "goalId": goal_id,
+                        "status": "todo",
+                        "priority": "high",
+                    },
+                )
+            except Exception:
+                logger.warning("Failed to create architecture summary issue")
 
     async def _force_conclude(
         self, debate: Debate, topic_id: int

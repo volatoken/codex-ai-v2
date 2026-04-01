@@ -227,6 +227,9 @@ class TelegramBot:
                 "\U0001f4ce \u2705 Approved! → phase Code"
             )
 
+            # Trigger Engineer with the approved final design
+            await self._trigger_engineer(slug, topics.get("code"))
+
         elif phase == "code":
             kv.set(f"project:{slug}:phase", "test")
             if topics.get("test"):
@@ -238,6 +241,47 @@ class TelegramBot:
             await update.message.reply_text(
                 "\U0001f4ce \u2705 Approved! → phase Test"
             )
+
+            # Trigger QA with the code output
+            await self._trigger_qa(slug, topics.get("test"))
+
+    async def _trigger_engineer(self, slug: str, topic_id: int | None) -> None:
+        """Send the approved architecture to Engineer agent for implementation."""
+        eng_id = kv.get(f"project:{slug}:pc_agents:engineer")
+        if not eng_id:
+            return
+
+        debate = Debate.load(slug)
+        final_design = debate.design_history[-1] if debate and debate.design_history else ""
+        if not final_design:
+            return
+
+        try:
+            response = await paperclip.invoke_agent(
+                eng_id,
+                f"Kiến trúc đã được approve. Hãy implement code:\n\n{final_design[:3000]}",
+            )
+            if topic_id and response:
+                await self._send(topic_id, response)
+        except Exception:
+            logger.warning("Failed to trigger Engineer for %s", slug)
+
+    async def _trigger_qa(self, slug: str, topic_id: int | None) -> None:
+        """Send the code output to QA agent for testing."""
+        qa_id = kv.get(f"project:{slug}:pc_agents:qa")
+        if not qa_id:
+            return
+
+        try:
+            response = await paperclip.invoke_agent(
+                qa_id,
+                "Code phase đã approve. Hãy review code và viết test cases.\n"
+                "Checkout issues từ Paperclip và kiểm tra.",
+            )
+            if topic_id and response:
+                await self._send(topic_id, response)
+        except Exception:
+            logger.warning("Failed to trigger QA for %s", slug)
 
     async def _on_reject(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
